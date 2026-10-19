@@ -134,6 +134,7 @@ class OllamaUnitTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(OllamaError):
                 _generate('qwen3:4b-instruct', 'Q', 'System')
         request.assert_called_once()
+        self.assertNotIn('think', request.call_args.args[2])
 
     async def test_clean_malformed_unicode_and_null_characters(self):
         self.assertEqual(_clean_text('аб\x00в\ud800'), 'абв?')
@@ -144,6 +145,20 @@ class OllamaUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('\x00', user_text)
         self.assertNotIn('\ud800', user_text)
         self.assertIn('?', user_text)
+
+    async def test_partial_server_error_body_is_safely_classified_unknown(self):
+        class BrokenStream(io.BytesIO):
+            def read(self, size=-1):
+                raise ValueError('bad response stream with secret KEY')
+        error = urllib.error.HTTPError('http://127.0.0.1:11434/api/chat',
+                                       400, 'Bad Request', {}, BrokenStream())
+        with patch('council.ollama_provider.urllib.request.urlopen', side_effect=error):
+            with self.assertLogs(level='WARNING') as records:
+                with self.assertRaises(OllamaError) as caught:
+                    _request('POST', '/api/chat', {'messages': []}, stage=3)
+        self.assertEqual(caught.exception.reason, 'unknown_http_400')
+        self.assertNotIn('KEY', str(caught.exception))
+        self.assertNotIn('KEY', ' '.join(records.output))
 
     async def test_http_400_logging_is_structural_and_credential_safe(self):
         body = json.dumps({'error': 'model does not support thinking; user: SECRET_TOKEN'}).encode()
