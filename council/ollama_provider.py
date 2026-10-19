@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import logging
 import urllib.error
@@ -19,7 +20,11 @@ class OllamaError(RuntimeError):
 
 
 def _clean_text(text: str) -> str:
-    """Replace malformed Unicode and NULs before JSON-encoding for local HTTP."""
+    """Remove NUL and replace lone Unicode surrogates with '?'.
+
+    Only invalid input is changed; this may alter malformed user-provided
+    source code. Valid Unicode stays unchanged. SQLite history is untouched.
+    """
     return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
 
 
@@ -65,7 +70,8 @@ def _request(method: str, endpoint: str, payload: dict | None = None,
                 if isinstance(message, dict):
                     message = str(message.get("type", "")) + " " + str(message.get("message", ""))
                 detail_text = str(message).lower()
-            except (ValueError, OSError):
+            except (ValueError, OSError, TypeError, AttributeError,
+                    http.client.IncompleteRead):
                 detail_text = ""
             if ("context" in detail_text or "контекст" in detail_text or
                     "too many tokens" in detail_text):
