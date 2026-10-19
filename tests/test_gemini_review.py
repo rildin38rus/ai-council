@@ -76,6 +76,29 @@ class ReviewerTests(unittest.TestCase):
         self.assertEqual(kwargs['api_key'], 'fake')
         self.assertIn('UNTRUSTED_DIFF', kwargs['payload']['contents'][0]['parts'][0]['text'])
 
+    def test_gemini_35_flash_lite_thinking_level(self):
+        response = {'candidates': [{'content': {'parts': [{'text': 'Review OK'}]},
+                                    'finishReason': 'STOP'}]}
+        with patch.object(review, 'api_json', return_value=response) as api:
+            text = review.gemini_review('+new code', {'included': 1}, 'fake',
+                                        'gemini-3.5-flash-lite', thinking_level='medium')
+        self.assertEqual(text, 'Review OK')
+        config = api.call_args.kwargs['payload']['generationConfig']
+        self.assertEqual(config['thinkingConfig']['thinkingLevel'], 'medium')
+        self.assertNotIn('thinkingBudget', config['thinkingConfig'])
+        self.assertNotIn('temperature', config)
+
+    def test_rejects_invalid_thinking_options(self):
+        with self.assertRaises(review.ReviewError):
+            review.gemini_review('+code', {}, 'fake', 'gemini-3.5-flash-lite',
+                                 thinking_budget=1024, thinking_level='medium')
+        with self.assertRaises(review.ReviewError):
+            review.gemini_review('+code', {}, 'fake', 'gemini-3.5-flash-lite',
+                                 thinking_level='invalid')
+        with self.assertRaises(review.ReviewError):
+            review.gemini_review('+code', {}, 'fake', 'gemini-3.5-flash-lite',
+                                 thinking_budget=1024)
+
     def test_empty_model_answer_is_error(self):
         with patch.object(review, 'api_json', return_value={'candidates': []}):
             with self.assertRaisesRegex(review.ReviewError, 'no candidates'):
