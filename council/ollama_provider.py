@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
+import logging
 import urllib.error
 import urllib.request
 
@@ -10,10 +12,45 @@ OLLAMA_URL = "http://127.0.0.1:11434"
 
 
 class OllamaError(RuntimeError):
-    """User-readable Ollama error, without echoing response bodies."""
+    """User-readable Ollama error with a safe machine-readable reason."""
+
+    def __init__(self, message: str, *, reason: str = "unknown"):
+        super().__init__(message)
+        self.reason = reason
 
 
-def _request(method: str, endpoint: str, payload: dict | None = None, timeout: int = 30) -> dict:
+def _clean_text(text: str) -> str:
+    """Remove NUL and replace lone Unicode surrogates with '?'.
+
+    Only invalid input is changed; this may alter malformed user-provided
+    source code. Valid Unicode stays unchanged. SQLite history is untouched.
+    """
+    return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
+
+
+def _log_safe_http_400(payload: dict | None, stage: int | None, error_class: str) -> None:
+    """Log only structural metadata; never include raw prompts or Ollama error bodies."""
+    payload = payload if isinstance(payload, dict) else {}
+    messages = payload.get("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+    lengths = [
+        len(m.get("content", "")) for m in messages
+        if isinstance(m, dict) and isinstance(m.get("content"), str)
+    ]
+    options = payload.get("options", {})
+    options = options if isinstance(options, dict) else {}
+    logging.warning(
+        "AI Council Ollama HTTP 400: stage=%s class=%s messages=%d "
+        "chars=%d options_ctx=%s options_predict=%s think_present=%s",
+        stage, error_class, len(lengths), sum(lengths),
+        options.get("num_ctx"), options.get("num_predict"),
+        "think" in payload,
+    )
+
+
+def _request(method: str, endpoint: str, payload: dict | None = None,
+             timeout: int = 30, stage: int | None = None) -> dict:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
     request = urllib.request.Request(
         OLLAMA_URL + endpoint, data=data, method=method,
@@ -25,31 +62,34 @@ def _request(method: str, endpoint: str, payload: dict | None = None, timeout: i
         if exc.code == 404:
             raise OllamaError("Ollama не нашла модель. Загрузите её через: ollama pull <имя-модели>") from None
         if exc.code == 400:
-            # Read for classification only: the body could contain private prompt
-            # fragments. Never expose or log the raw HTTP response body.
+            # Read only to classify the cause: the raw body may contain prompt
+            # fragments or secrets, and is NEVER logged or re-thrown verbatim.
             try:
                 detail = json.loads(exc.read(4096).decode("utf-8", errors="replace"))
                 message = detail.get("error", "") if isinstance(detail, dict) else ""
                 if isinstance(message, dict):
                     message = str(message.get("type", "")) + " " + str(message.get("message", ""))
                 detail_text = str(message).lower()
-            except (ValueError, OSError):
+            except (ValueError, OSError, TypeError, AttributeError,
+                    http.client.IncompleteRead):
                 detail_text = ""
             if ("context" in detail_text or "контекст" in detail_text or
                     "too many tokens" in detail_text):
-                raise OllamaError(
-                    "Контекст запроса превышает окно Ollama (HTTP 400). "
-                    "Попробуйте сократить историю или увеличить num_ctx."
-                ) from None
-            if "think" in detail_text and ("support" in detail_text or "invalid" in detail_text):
-                raise OllamaError(
-                    "Ollama отклонила параметр think (HTTP 400). "
-                    "Проверьте совместимость версии и модели."
-                ) from None
-            raise OllamaError(
-                "Ollama отклонила запрос HTTP 400. "
-                "Причина может быть в параметрах, шаблоне модели или контексте."
-            ) from None
+                reason = "context_overflow"
+                user_error = "Контекст запроса превышает окно Ollama (HTTP 400)."
+            elif ("think" in detail_text and
+                  any(word in detail_text for word in
+                      ("support", "invalid", "not allowed", "not enabled", "unknown field"))):
+                reason = "unsupported_think"
+                user_error = "Ollama отклонила параметр think (HTTP 400)."
+            elif any(word in detail_text for word in ("invalid character", "invalid utf", "unmarshal")):
+                reason = "malformed_json"
+                user_error = "Ollama отклонила формат запроса (HTTP 400)."
+            else:
+                reason = "unknown_http_400"
+                user_error = "Ollama отклонила запрос HTTP 400. Проверьте журнал."
+            _log_safe_http_400(payload, stage, reason)
+            raise OllamaError(user_error, reason=reason) from None
         raise OllamaError(f"Ollama вернула HTTP {exc.code}") from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise OllamaError("Ollama недоступна на 127.0.0.1:11434. Установите и запустите Ollama.") from None
@@ -81,7 +121,7 @@ def installed_models() -> list[dict]:
     return sorted(models, key=lambda m: m["id"])
 
 
-def _generate(model: str, prompt: str, system: str) -> str:
+def _generate(model: str, prompt: str, system: str, stage: int | None = None) -> str:
     # qwen3:4b is an alias for Qwen3-4B-Thinking-2507, which cannot
     # reliably disable thinking and may return only an unfinished monologue.
     model_tag = model.lower().strip()
@@ -93,13 +133,24 @@ def _generate(model: str, prompt: str, system: str) -> str:
         )
     payload = {
         "model": model,
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": prompt}],
+        "messages": [{"role": "system", "content": _clean_text(system)},
+                     {"role": "user", "content": _clean_text(prompt)}],
         "stream": False,
-        "think": False,
         "options": {"num_predict": 1536, "num_ctx": 16384},
     }
-    result = _request("POST", "/api/chat", payload, timeout=900)
+    # Qwen3 Instruct-2507 is a non-thinking checkpoint. Some Ollama builds
+    # reject "think": false even though other models accept the same flag.
+    if "instruct" not in model_tag:
+        payload["think"] = False
+    try:
+        result = _request("POST", "/api/chat", payload, timeout=900, stage=stage)
+    except OllamaError as exc:
+        # Retry only when Ollama explicitly confirms an unsupported think
+        # parameter. Never retry an arbitrary 400; it may be unrelated.
+        if exc.reason != "unsupported_think" or "think" not in payload:
+            raise
+        retry_payload = {k: v for k, v in payload.items() if k != "think"}
+        result = _request("POST", "/api/chat", retry_payload, timeout=900, stage=stage)
     message = result.get("message")
     if not isinstance(message, dict):
         raise OllamaError("Ollama не вернула сообщение модели")
@@ -147,4 +198,4 @@ class OllamaProvider:
                   "На первом этапе отвечай независимо, без предположений о словах коллеги. "
                   "Пиши по-русски, чётко и по существу, отделяй факты от предположений "
                   "и не стремись к искусственному согласию.")
-        return await asyncio.to_thread(_generate, config.model, prompt, system)
+        return await asyncio.to_thread(_generate, config.model, prompt, system, stage)
