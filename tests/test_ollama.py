@@ -136,13 +136,13 @@ class OllamaUnitTests(unittest.IsolatedAsyncioTestCase):
         request.assert_called_once()
 
     async def test_clean_malformed_unicode_and_null_characters(self):
-        self.assertEqual(_clean_text('аб\\x00в\\ud800'), 'абв?')
+        self.assertEqual(_clean_text('аб\x00в\ud800'), 'абв?')
         with patch('council.ollama_provider._request', return_value={
             'message': {'content': 'ok'}}) as request:
-            _generate('qwen3:4b-instruct', 'Текст\\x00\\ud800', 'C')
+            _generate('qwen3:4b-instruct', 'Текст\x00\ud800', 'C')
         user_text = request.call_args.args[2]['messages'][1]['content']
-        self.assertNotIn('\\x00', user_text)
-        self.assertNotIn('\\ud800', user_text)
+        self.assertNotIn('\x00', user_text)
+        self.assertNotIn('\ud800', user_text)
         self.assertIn('?', user_text)
 
     async def test_http_400_logging_is_structural_and_credential_safe(self):
