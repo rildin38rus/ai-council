@@ -84,14 +84,41 @@ class OllamaUnitTests(unittest.IsolatedAsyncioTestCase):
     async def test_payload_and_no_credential_leak(self):
         with patch('council.ollama_provider._request', return_value={
             'message': {'role': 'assistant', 'content': ' Готово '}}) as sender:
-            result = _generate('qwen3:4b', 'Hello', 'Be helpful')
+            result = _generate('qwen3:4b-instruct', 'Hello', 'Be helpful')
         self.assertEqual(result, 'Готово')
         payload = sender.call_args.args[2]
-        self.assertEqual(payload['model'], 'qwen3:4b')
+        self.assertEqual(payload['model'], 'qwen3:4b-instruct')
         self.assertFalse(payload['stream'])
         self.assertFalse(payload['think'])
         self.assertEqual(payload['messages'][0]['role'], 'system')
         self.assertNotIn('OPENAI_API_KEY', str(payload))
+
+    async def test_thinking_only_alias_refused_before_api_request(self):
+        with patch('council.ollama_provider._request') as request:
+            for model in ('qwen3:4b', 'qwen3:4b-thinking'):
+                with self.assertRaisesRegex(OllamaError, 'qwen3:4b-instruct'):
+                    _generate(model, 'Q', 'System')
+            request.assert_not_called()
+
+    async def test_length_limited_response_is_not_relayed(self):
+        with patch('council.ollama_provider._request', return_value={
+            'message': {'content': 'Черновик'}, 'done_reason': 'length'}):
+            with self.assertRaisesRegex(OllamaError, 'лимита'):
+                _generate('qwen3:4b-instruct', 'Q', 'System')
+
+    async def test_long_meta_draft_not_accepted(self):
+        raw = 'Хорошо, мне нужно сначала выбрать формулировку. ' * 30
+        with patch('council.ollama_provider._request', return_value={
+            'message': {'content': raw}, 'done_reason': 'stop'}):
+            with self.assertRaisesRegex(OllamaError, 'черновик'):
+                _generate('qwen3:4b-instruct', 'Q', 'System')
+
+    async def test_legitimate_short_answer_is_kept(self):
+        with patch('council.ollama_provider._request', return_value={
+            'message': {'content': 'Три пункта: 1. Проверка 2. Экономия 3. Качество'},
+            'done_reason': 'stop'}):
+            answer = _generate('qwen3:4b-instruct', 'Q', 'System')
+        self.assertIn('Три пункта:', answer)
 
     async def test_installed_model_catalog(self):
         with patch('council.ollama_provider._request', return_value={
