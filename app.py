@@ -32,7 +32,7 @@ class StartTurn(BaseModel):
     mode: str = 'joint'
     free_replies: int = Field(default=6, ge=2, le=8)
     openai: AgentSettings = AgentSettings(model='gpt-6.1-sol')
-    local: AgentSettings = AgentSettings(model='qwen3:4b')
+    local: AgentSettings = AgentSettings(model='qwen3:4b-instruct')
     gemini: AgentSettings = AgentSettings(model='gemini-3.8-flash')
 
 
