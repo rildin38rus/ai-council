@@ -56,6 +56,15 @@ def installed_models() -> list[dict]:
 
 
 def _generate(model: str, prompt: str, system: str) -> str:
+    # qwen3:4b is an alias for Qwen3-4B-Thinking-2507, which cannot
+    # reliably disable thinking and may return only an unfinished monologue.
+    model_tag = model.lower().strip()
+    if model_tag == "qwen3:4b" or model_tag.startswith("qwen3:4b-thinking"):
+        raise OllamaError(
+            "Эта версия Qwen3 предназначена для длительных рассуждений и не подходит "
+            "для протокола AI Council. Выполните: ollama pull qwen3:4b-instruct; "
+            "затем выберите qwen3:4b-instruct и начните НОВОЕ обсуждение."
+        )
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system},
@@ -71,15 +80,40 @@ def _generate(model: str, prompt: str, system: str) -> str:
     content = message.get("content")
     if not isinstance(content, str) or not content.strip():
         raise OllamaError("Локальная модель вернула пустой текстовый ответ")
-    return content.strip()
+    if result.get("done_reason") == "length":
+        raise OllamaError(
+            "Локальная модель достигла лимита генерации и не закончила ответ. "
+            "Ответ не отправлен второй модели. Выберите qwen3:4b-instruct."
+        )
+    cleaned = content.strip()
+    # A model may emit a planning draft into content instead of message.thinking.
+    # Reject only unmistakable, lengthy self-instructions; avoid auto-extracting
+    # or inventing a purported 'final answer' from the draft.
+    draft_prefixes = (
+        "хорошо, мне нужно", "сначала мне нужно", "сначала я должен",
+        "давай разберу, что нужно", "сначала подумаю,"
+    )
+    if len(cleaned) > 700 and cleaned.lower().startswith(draft_prefixes):
+        raise OllamaError(
+            "Ollama прислала развёрнутый черновик вместо итогового ответа. "
+            "Он не будет передан Gemini. Выберите qwen3:4b-instruct "
+            "и начните новое обсуждение."
+        )
+    return cleaned
 
 
 class OllamaProvider:
     async def answer(self, agent: str, stage: int, prompt: str, config) -> str:
         system = ("Ты нейтральный редактор итогового протокола AI Council. Пиши по-русски, "
-                  "фиксируй разногласия и не выдумывай факты."
+                  "фиксируй разногласия и не выдумывай факты. "
+                  "Без вступлений и рассуждений, сразу пять разделов: "
+                  "Итог, Совпадения, Разногласия, Непроверенные утверждения, "
+                  "Практические шаги. Не более 300 слов."
                   if stage == 4 else
                   "Ты локальный независимый аналитик AI Council, работающий через Ollama. "
+                  "Отвечай только готовым, завершённым текстом. Не публикуй внутренний "
+                  "план, перечень вариантов формулировок или процесс подготовки ответа. "
+                  "Пиши ёмко: обычно 100–250 слов, для протокола — до 300 слов. "
                   "Твоя коллега — Gemini от Google. Общение между вами организует сервер AI Council: "
                   "он передаёт цитаты ответов коллеги в последующих раундах. "
                   "Тебе не нужен самостоятельный доступ к API Gemini; не утверждай, "
