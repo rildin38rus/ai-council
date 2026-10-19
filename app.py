@@ -53,7 +53,7 @@ async def config():
 @app.get('/api/models')
 async def models(refresh: bool = False):
     """Discover models permitted for the local API keys; never expose secrets."""
-    return await model_catalog(refresh=refresh)
+    return await model_catalog(refresh=refresh, primary_provider=PRIMARY_PROVIDER)
 
 
 @app.get('/api/rooms')
