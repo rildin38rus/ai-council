@@ -1,4 +1,5 @@
 """AI Council web app: loopback only; never expose without auth/TLS."""
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -76,17 +77,29 @@ async def new_turn(rid: str, data: StartTurn):
         allowed = ('default','low','medium','high','xhigh','max') if agent == 'openai' else ('default','minimal','low','medium','high')
         if s.effort not in allowed:
             raise HTTPException(422, f'Недопустимая глубина {agent}')
-        if agent == 'gemini' and 'pro' in s.model.lower() and s.effort == 'minimal':
-            raise HTTPException(422, 'Gemini Pro не поддерживает минимальную глубину: используйте low/medium/high или Авто')
+        if agent == 'gemini' and s.effort == 'minimal' and ('flash' not in s.model.lower() or 'flash-lite' in s.model.lower()):
+            raise HTTPException(422, 'Минимальная глубина не поддерживается выбранной моделью Gemini. Используйте low/medium/high или Авто')
         if agent == 'openai' and s.mode not in ('standard', 'pro'):
             raise HTTPException(422, 'Недопустимый режим OpenAI')
+    if not DEMO_MODE:
+        required = []
+        if data.mode in ('joint', 'free', 'solo_openai'):
+            required.append('OPENAI_API_KEY')
+        if data.mode in ('joint', 'free', 'solo_gemini'):
+            required.append('GEMINI_API_KEY')
+        missing = [key for key in required if not os.getenv(key)]
+        if missing:
+            raise HTTPException(422, 'Не заданы ключи API: ' + ', '.join(missing))
     current = store.get_room(rid)['turns']
     if any(t['status'] in ('queued', 'running', 'summarizing') for t in current):
         raise HTTPException(409, 'В комнате уже выполняется обсуждение. Дождитесь окончания или остановите его.')
     tid = store.add_turn(rid, data.question.strip(), data.mode,
                          {'openai': data.openai.model_dump(), 'gemini': data.gemini.model_dump()},
                          free_replies=data.free_replies)
-    engine.start(tid)
+    try:
+        engine.start(tid)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {'turn_id': tid, 'status': 'running'}
 
 
@@ -96,8 +109,14 @@ async def stop(tid: str):
         t = store.get_turn(tid)
     except KeyError:
         raise HTTPException(404, 'Обсуждение не найдено')
+    job = engine.jobs.get(tid)
     if not engine.stop(tid):
         raise HTTPException(409, 'Сейчас нет активной задачи для остановки')
+    if job:
+        try:
+            await asyncio.wait_for(asyncio.shield(job), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
     return {'status': 'stopping'}
 
 
@@ -109,7 +128,13 @@ async def retry(tid: str):
         raise HTTPException(404, 'Обсуждение не найдено')
     if t['status'] not in ('error','interrupted','stopped'):
         raise HTTPException(409, 'Повтор доступен только для остановленной или прерванной задачи')
-    engine.start(tid)
+    active = store.get_room(t['room_id'])['turns']
+    if any(other['id'] != tid and other['status'] in ('queued', 'running', 'summarizing') for other in active):
+        raise HTTPException(409, 'В комнате выполняется другое обсуждение')
+    try:
+        engine.start(tid)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {'status': 'running'}
 
 
