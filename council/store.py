@@ -100,7 +100,9 @@ class Store:
 
     def messages(self, tid):
         return self.fetch('''SELECT stage,agent,body,created_at FROM messages
-                             WHERE turn_id=? ORDER BY stage,agent''', (tid,))
+                             WHERE turn_id=? ORDER BY stage,
+                             CASE agent WHEN 'openai' THEN 1 WHEN 'gemini' THEN 2 ELSE 3 END,
+                             created_at''', (tid,))
 
     def put_message(self, tid, stage, agent, body):
         self.execute('''INSERT INTO messages VALUES(?,?,?,?,?,?)
@@ -117,20 +119,28 @@ class Store:
             self.execute('UPDATE turns SET status=?,stage=? WHERE id=?', (state, stage, tid))
 
     def context(self, rid, exclude_turn, limit=4):
-        turns = self.fetch('''SELECT id, question FROM turns
+        turns = self.fetch('''SELECT id, question, mode FROM turns
                               WHERE room_id=? AND id<>? AND status='done'
                               ORDER BY created_at DESC, rowid DESC LIMIT ?''',
                            (rid, exclude_turn, limit))
-        snippets = []
-        for t in reversed(turns):
+        selected = []
+        used = 0
+        for t in turns:
             messages = self.messages(t['id'])
-            turn = self.get_turn(t['id'])
             final = ([m for m in messages if m['stage'] == 3]
-                     if turn['mode'] == 'joint' else
-                     messages[-2:] if turn['mode'] == 'free' else messages[-1:])
+                     if t['mode'] == 'joint' else
+                     messages[-2:] if t['mode'] == 'free' else messages[-1:])
             if not final:
                 final = [m for m in messages if m['stage'] == 1]
-            snippets.append('Вопрос: ' + t['question'][:1500] + '\n' + '\n'.join(
-                f"{m['agent']}: {m['body'][:1800]}" for m in final
-            ))
-        return '\n\n'.join(snippets)[:14000]
+            snippet = ('Вопрос: ' + t['question'][:1500] + '\n' + '\n'.join(
+                f"{m['agent']}: {m['body'][:1800]}" for m in final))
+            available = 14000 - used - (2 if selected else 0)
+            if available <= 0:
+                break
+            if len(snippet) > available:
+                if selected:
+                    break
+                snippet = snippet[:available]
+            selected.append(snippet)
+            used += len(snippet) + (2 if len(selected) > 1 else 0)
+        return '\n\n'.join(reversed(selected))
