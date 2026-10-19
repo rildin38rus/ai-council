@@ -10,6 +10,7 @@ from council.config import DB_PATH, DEMO_MODE, ROOT
 from council.store import Store
 from council.providers import ProviderRouter
 from council.engine import Engine
+from council.model_catalog import model_catalog
 
 app = FastAPI(title='AI Council 0.2.1')
 store = Store(DB_PATH)
@@ -47,6 +48,12 @@ async def config():
     }}
 
 
+@app.get('/api/models')
+async def models(refresh: bool = False):
+    """Discover models permitted for the local API keys; never expose secrets."""
+    return await model_catalog(refresh=refresh)
+
+
 @app.get('/api/rooms')
 async def rooms():
     return store.rooms()
@@ -77,7 +84,7 @@ async def new_turn(rid: str, data: StartTurn):
         allowed = ('default','low','medium','high','xhigh','max') if agent == 'openai' else ('default','minimal','low','medium','high')
         if s.effort not in allowed:
             raise HTTPException(422, f'Недопустимая глубина {agent}')
-        if agent == 'gemini' and s.effort == 'minimal' and 'flash' not in s.model.lower():
+        if agent == 'gemini' and s.effort == 'minimal' and (s.model.lower().startswith('gemini-4-') or 'flash' not in s.model.lower()):
             raise HTTPException(422, 'Минимальная глубина не поддерживается выбранной моделью Gemini. Используйте low/medium/high или Авто')
         if agent == 'openai' and s.mode not in ('standard', 'pro'):
             raise HTTPException(422, 'Недопустимый режим OpenAI')
