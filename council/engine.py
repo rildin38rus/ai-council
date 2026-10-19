@@ -11,7 +11,22 @@ def public_error(agent: str, error: BaseException) -> str:
     """Explain which provider failed without exposing raw SDK errors or credentials."""
     label = {'local': 'Ollama', 'gemini': 'Gemini', 'openai': 'OpenAI'}.get(agent, 'Модель')
     if agent == 'local' and isinstance(error, OllamaError):
-        return f'{label}: {str(error)[:350]}'
+        # Whitelist user-facing diagnostics; even future exception messages
+        # should not be able to reveal local file paths or secret values.
+        message = str(error)
+        if 'лимита генерации' in message:
+            return 'Ollama: превышен лимит длины ответа. Попробуйте сократить вопрос.'
+        if 'черновик' in message:
+            return 'Ollama: модель выдала незавершённый черновик. Выберите qwen3:4b-instruct.'
+        if 'не подходит' in message:
+            return 'Ollama: выбрана Thinking-модель. Используйте qwen3:4b-instruct.'
+        if 'недоступна' in message:
+            return 'Ollama: локальный сервер недоступен. Проверьте запуск Ollama.'
+        if 'не нашла модель' in message:
+            return 'Ollama: локальная модель не установлена. Проверьте ollama list.'
+        if 'пустой текстовый ответ' in message:
+            return 'Ollama: модель вернула пустой ответ.'
+        return 'Ollama: ошибка локальной модели. Подробности в журнале сервера.'
     status = getattr(error, 'status_code', None) or getattr(error, 'code', None)
     if hasattr(status, 'value'):
         status = status.value
