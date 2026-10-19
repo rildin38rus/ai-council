@@ -11,7 +11,7 @@ from council.store import Store
 from council.providers import ProviderRouter
 from council.engine import Engine
 
-app = FastAPI(title='AI Council 0.2.0')
+app = FastAPI(title='AI Council 0.2.1')
 store = Store(DB_PATH)
 engine = Engine(store, ProviderRouter(demo=DEMO_MODE))
 
