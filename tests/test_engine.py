@@ -2,7 +2,8 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from council.engine import Engine
+from council.engine import Engine, public_error
+from council.ollama_provider import OllamaError
 from council.store import Store
 
 SETTINGS={'openai':{'model':'m1','effort':'low','mode':'standard'},'gemini':{'model':'m2','effort':'high','mode':'standard'}}
@@ -59,6 +60,39 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.jobs[tid]
         self.assertEqual(len(self.store.messages(tid)),6)
         self.assertNotIn(('openai',1),[(a,s) for a,s,*_ in self.provider.calls])
+    async def test_named_error_preserves_successful_stage_reply_and_retry(self):
+        tid=self.store.add_turn(self.room,'Diagnose stage 3 failure','joint',SETTINGS)
+        self.provider.wait.set()
+        original=self.provider.answer
+        fail={'value':True}
+        async def flaky(agent,stage,prompt,config):
+            if agent=='gemini' and stage==3 and fail['value']:
+                fail['value']=False
+                raise RuntimeError('429 RESOURCE_EXHAUSTED; private api_key=SECRET_KEY')
+            return await original(agent,stage,prompt,config)
+        self.provider.answer=flaky
+        self.engine.start(tid)
+        await self.engine.jobs[tid]
+        turn=self.store.get_turn(tid)
+        self.assertEqual(turn['status'],'error')
+        self.assertEqual(turn['stage'],3)
+        self.assertIn('Gemini',turn['error_detail'])
+        self.assertIn('429',turn['error_detail'])
+        self.assertNotIn('SECRET_KEY',turn['error_detail'])
+        self.assertEqual(len(turn['messages']),5)
+        self.engine.start(tid)
+        await self.engine.jobs[tid]
+        turn=self.store.get_turn(tid)
+        self.assertEqual(turn['status'],'done')
+        self.assertIsNone(turn['error_detail'])
+        self.assertEqual(len(turn['messages']),6)
+        self.assertEqual(len([c for c in self.provider.calls if c[:2]==('openai',3)]),1)
+
+    async def test_public_error_never_returns_raw_sdk_exception(self):
+        self.assertIn('Ollama',public_error('local',OllamaError('Отклонён незавершённый ответ')))
+        self.assertEqual(public_error('gemini',RuntimeError('surprise api_key=SECRET')),
+                         'Gemini: не удалось получить ответ. Подробности в журнале сервера.')
+
     async def test_store_restarts_interrupted_not_done(self):
         tid=self.store.add_turn(self.room,'Long request','joint',SETTINGS)
         self.store.status(tid,'running',1)
