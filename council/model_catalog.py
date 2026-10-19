@@ -185,4 +185,6 @@ async def model_catalog(refresh: bool = False) -> dict:
     openai, gemini = await asyncio.gather(
         list_provider_models("openai", refresh),
         list_provider_models("gemini", refresh))
-    return {"openai": openai, "gemini": gemini, "refresh": refresh}
+    return {"openai": openai, "gemini": gemini, "refresh": refresh,
+            "gemini_guide": KNOWN_GEMINI_MODELS,
+            "guide_as_of": "2026-10-19"}
