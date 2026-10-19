@@ -1,6 +1,7 @@
 """Replaceable model providers. No private model thinking/CoT is requested or stored."""
 import asyncio
 import os
+from .ollama_provider import OllamaProvider
 from dataclasses import dataclass
 
 
@@ -15,7 +16,7 @@ class DemoProvider:
     """Self-contained demonstration: not real AI output."""
     async def answer(self, agent: str, stage: int, prompt: str, config: AgentConfig) -> str:
         await asyncio.sleep(0.15 if agent == 'openai' else 0.35)
-        label = 'OpenAI (демо)' if agent == 'openai' else 'Gemini (демо)'
+        label = {'openai': 'OpenAI (демо)', 'local': 'Локальная модель Ollama (демо)', 'gemini': 'Gemini (демо)'}.get(agent, agent)
         if stage == 1:
             return f'{label}: предварительный независимый разбор. ' + (
                 'Я бы начал с проверки требований, источников и критериев успеха.' if agent == 'openai'
@@ -112,12 +113,22 @@ class GeminiProvider:
 
 
 class ProviderRouter:
-    def __init__(self, demo=False):
+    def __init__(self, demo=False, primary_provider='openai'):
+        if primary_provider not in ('openai', 'ollama'):
+            raise ValueError('Invalid primary provider')
         self.demo = demo
+        self.primary_agent = 'local' if primary_provider == 'ollama' else 'openai'
         self.openai = OpenAIProvider()
+        self.local = OllamaProvider()
         self.gemini = GeminiProvider()
         self.mock = DemoProvider()
 
     async def answer(self, agent, stage, prompt, config):
-        provider = self.mock if self.demo else (self.openai if agent == 'openai' else self.gemini)
+        if agent not in ('openai', 'local', 'gemini'):
+            raise ValueError('Unknown agent')
+        if self.demo:
+            provider = self.mock
+        else:
+            provider = {'openai': self.openai, 'local': self.local,
+                        'gemini': self.gemini}[agent]
         return await provider.answer(agent, stage, prompt, config)

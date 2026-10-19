@@ -14,10 +14,14 @@ def load_dotenv(path: Path = ROOT / '.env') -> None:
             continue
         key, value = line.split('=', 1)
         key = key.strip()
-        if key in {'OPENAI_API_KEY', 'GEMINI_API_KEY', 'COUNCIL_DB', 'COUNCIL_DEMO'}:
+        if key in {'OPENAI_API_KEY', 'GEMINI_API_KEY', 'COUNCIL_DB', 'COUNCIL_DEMO', 'COUNCIL_PRIMARY_PROVIDER'}:
             os.environ.setdefault(key, value.strip().strip('"').strip("'"))
 
 
 load_dotenv()
 DB_PATH = Path(os.getenv('COUNCIL_DB', str(ROOT / 'council.sqlite3')))
 DEMO_MODE = os.getenv('COUNCIL_DEMO', '1').lower() in {'1', 'true', 'yes'}
+
+PRIMARY_PROVIDER = os.getenv('COUNCIL_PRIMARY_PROVIDER', 'openai').strip().lower()
+if PRIMARY_PROVIDER not in ('openai', 'ollama'):
+    raise ValueError('COUNCIL_PRIMARY_PROVIDER must be openai or ollama')

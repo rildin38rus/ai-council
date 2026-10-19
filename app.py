@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
-from council.config import DB_PATH, DEMO_MODE, ROOT
+from council.config import DB_PATH, DEMO_MODE, ROOT, PRIMARY_PROVIDER
 from council.store import Store
 from council.providers import ProviderRouter
 from council.engine import Engine
@@ -14,7 +14,7 @@ from council.model_catalog import model_catalog, KNOWN_GEMINI_MODELS
 
 app = FastAPI(title='AI Council 0.2.1')
 store = Store(DB_PATH)
-engine = Engine(store, ProviderRouter(demo=DEMO_MODE))
+engine = Engine(store, ProviderRouter(demo=DEMO_MODE, primary_provider=PRIMARY_PROVIDER))
 
 
 class NewRoom(BaseModel):
@@ -32,6 +32,7 @@ class StartTurn(BaseModel):
     mode: str = 'joint'
     free_replies: int = Field(default=6, ge=2, le=8)
     openai: AgentSettings = AgentSettings(model='gpt-6.1-sol')
+    local: AgentSettings = AgentSettings(model='qwen3:4b')
     gemini: AgentSettings = AgentSettings(model='gemini-3.8-flash')
 
 
@@ -42,7 +43,8 @@ async def homepage():
 
 @app.get('/api/config')
 async def config():
-    return {'demo': DEMO_MODE, 'providers': {
+    return {'demo': DEMO_MODE, 'primary_agent': engine.primary_agent, 'providers': {
+        'local': PRIMARY_PROVIDER == 'ollama',
         'openai': bool(os.getenv('OPENAI_API_KEY')),
         'gemini': bool(os.getenv('GEMINI_API_KEY')),
     }}
@@ -51,7 +53,7 @@ async def config():
 @app.get('/api/models')
 async def models(refresh: bool = False):
     """Discover models permitted for the local API keys; never expose secrets."""
-    return await model_catalog(refresh=refresh)
+    return await model_catalog(refresh=refresh, primary_provider=PRIMARY_PROVIDER)
 
 
 @app.get('/api/rooms')
@@ -78,10 +80,12 @@ async def new_turn(rid: str, data: StartTurn):
         store.get_room(rid)
     except KeyError:
         raise HTTPException(status_code=404, detail='Комната не найдена')
-    if data.mode not in ('joint', 'free', 'solo_openai', 'solo_gemini'):
+    if data.mode not in ('joint', 'free', 'solo_' + engine.primary_agent, 'solo_gemini'):
         raise HTTPException(422, 'Неизвестный режим')
-    for agent, s in [('openai', data.openai), ('gemini', data.gemini)]:
-        allowed = ('default','low','medium','high','xhigh','max') if agent == 'openai' else ('default','minimal','low','medium','high')
+    primary_settings = data.local if engine.primary_agent == 'local' else data.openai
+    for agent, s in [(engine.primary_agent, primary_settings), ('gemini', data.gemini)]:
+        allowed = (('default','low','medium','high','xhigh','max') if agent == 'openai' else
+                   ('default','minimal','low','medium','high') if agent == 'gemini' else ('default',))
         if s.effort not in allowed:
             raise HTTPException(422, f'Недопустимая глубина {agent}')
         if agent == 'gemini' and s.effort == 'minimal' and 'minimal' not in KNOWN_GEMINI_MODELS.get(s.model.lower(), {}).get('thinking_levels', ['minimal']):
@@ -90,7 +94,7 @@ async def new_turn(rid: str, data: StartTurn):
             raise HTTPException(422, 'Недопустимый режим OpenAI')
     if not DEMO_MODE:
         required = []
-        if data.mode in ('joint', 'free', 'solo_openai'):
+        if engine.primary_agent == 'openai' and data.mode in ('joint', 'free', 'solo_openai'):
             required.append('OPENAI_API_KEY')
         if data.mode in ('joint', 'free', 'solo_gemini'):
             required.append('GEMINI_API_KEY')
@@ -101,7 +105,8 @@ async def new_turn(rid: str, data: StartTurn):
     if any(t['status'] in ('queued', 'running', 'summarizing') for t in current):
         raise HTTPException(409, 'В комнате уже выполняется обсуждение. Дождитесь окончания или остановите его.')
     tid = store.add_turn(rid, data.question.strip(), data.mode,
-                         {'openai': data.openai.model_dump(), 'gemini': data.gemini.model_dump()},
+                         {'openai': data.openai.model_dump(), 'local': data.local.model_dump(),
+                          'gemini': data.gemini.model_dump()},
                          free_replies=data.free_replies)
     try:
         engine.start(tid)
