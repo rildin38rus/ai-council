@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 
 html = Path("static/index.html").read_text(encoding="utf-8")
-scripts = re.findall(r"<script(?:\\s[^>]*)?>([\\s\\S]*?)</script>", html, flags=re.I)
+scripts = re.findall(r"<script(?:\s[^>]*)?>([\s\S]*?)</script>", html, flags=re.I)
 if len(scripts) != 1:
     raise SystemExit(f"Expected exactly one inline JS script, got {len(scripts)}")
 with tempfile.TemporaryDirectory() as folder:
