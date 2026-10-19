@@ -32,6 +32,10 @@ class DemoProvider:
         return f'{label}: итоговая позиция. Сохраняю собственный акцент; предлагаю проверить оба подхода на тестовом примере.'
 
 
+# Gemini 2.5 accepts budgets; Gemini 3 accepts thinking levels.
+GEMINI_25_BUDGETS = {'minimal': 0, 'low': 1024, 'medium': 8192, 'high': 24576}
+
+
 class OpenAIProvider:
     async def answer(self, agent: str, stage: int, prompt: str, config: AgentConfig) -> str:
         from openai import AsyncOpenAI
@@ -39,9 +43,12 @@ class OpenAIProvider:
         if not key:
             raise RuntimeError('Не задан OPENAI_API_KEY')
         client = AsyncOpenAI(api_key=key, timeout=1800.0, max_retries=1)
+        instructions = ('Ты нейтральный редактор итогового протокола AI Council. Пиши по-русски, строго по фактам дискуссии.'
+                        if stage == 4 else
+                        'Ты первый независимый аналитик AI Council. Пиши по-русски, честно обозначай неопределённость. Не выдумывай сведения и не стремись к искусственному согласию.')
         kwargs = {
             'model': config.model,
-            'instructions': 'Ты первый независимый аналитик AI Council. Пиши по-русски, честно обозначай неопределённость. Не выдумывай сведения и не стремись к искусственному согласию.',
+            'instructions': instructions,
             'input': prompt,
             'store': False,  # Do not retain content for response state on the OpenAI side.
         }
@@ -73,14 +80,32 @@ class GeminiProvider:
         try:
             parameters = {'system_instruction': 'Ты второй независимый аналитик AI Council. Пиши по-русски, честно обозначай неопределённость. Не выдумывай сведения и не стремись к искусственному согласию.'}
             if config.effort != 'default':
-                parameters['thinking_config'] = types.ThinkingConfig(thinking_level=config.effort)
+                if config.model.lower().startswith('gemini-2.5-'):
+                    budget = GEMINI_25_BUDGETS[config.effort]
+                    if 'pro' in config.model.lower() and budget == 0:
+                        raise ValueError('Gemini 2.5 Pro не поддерживает выключение размышления')
+                    parameters['thinking_config'] = types.ThinkingConfig(thinking_budget=budget)
+                else:
+                    parameters['thinking_config'] = types.ThinkingConfig(thinking_level=config.effort)
             response = await client.aio.models.generate_content(
                 model=config.model, contents=prompt,
                 config=types.GenerateContentConfig(**parameters)
             )
-            value = (response.text or '').strip()
+            try:
+                value = (response.text or '').strip()
+            except (ValueError, AttributeError, RuntimeError):
+                value = ''
             if not value:
-                raise RuntimeError('Gemini API не вернул текстовый ответ')
+                reasons = []
+                feedback = getattr(response, 'prompt_feedback', None)
+                if feedback is not None and getattr(feedback, 'block_reason', None):
+                    reasons.append(f'block_reason={feedback.block_reason}')
+                for candidate in (getattr(response, 'candidates', None) or []):
+                    reason = getattr(candidate, 'finish_reason', None)
+                    if reason:
+                        reasons.append(f'finish_reason={reason}')
+                detail = f" ({', '.join(reasons)})" if reasons else ''
+                raise RuntimeError(f'Gemini API не вернул текстовый ответ{detail}')
             return value
         finally:
             await client.aio.aclose()
