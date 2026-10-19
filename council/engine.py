@@ -2,8 +2,52 @@
 import asyncio
 from collections.abc import Callable
 from .providers import AgentConfig
+from .ollama_provider import OllamaError
 
 AGENTS = ('openai', 'gemini')
+
+
+def public_error(agent: str, error: BaseException) -> str:
+    """Explain which provider failed without exposing raw SDK errors or credentials."""
+    label = {'local': 'Ollama', 'gemini': 'Gemini', 'openai': 'OpenAI'}.get(agent, 'Модель')
+    if agent == 'local' and isinstance(error, OllamaError):
+        # Whitelist user-facing diagnostics; even future exception messages
+        # should not be able to reveal local file paths or secret values.
+        message = str(error)
+        if 'лимита генерации' in message:
+            return 'Ollama: превышен лимит длины ответа. Попробуйте сократить вопрос.'
+        if 'черновик' in message:
+            return 'Ollama: модель выдала незавершённый черновик. Выберите qwen3:4b-instruct.'
+        if 'не подходит' in message:
+            return 'Ollama: выбрана Thinking-модель. Используйте qwen3:4b-instruct.'
+        if 'недоступна' in message:
+            return 'Ollama: локальный сервер недоступен. Проверьте запуск Ollama.'
+        if 'не нашла модель' in message:
+            return 'Ollama: локальная модель не установлена. Проверьте ollama list.'
+        if 'пустой текстовый ответ' in message:
+            return 'Ollama: модель вернула пустой ответ.'
+        return 'Ollama: ошибка локальной модели. Подробности в журнале сервера.'
+    status = getattr(error, 'status_code', None) or getattr(error, 'code', None)
+    if hasattr(status, 'value'):
+        status = status.value
+    # SDKs vary: HTTP status can be an integer or part of the error description.
+    hint = str(status or '') + ' ' + type(error).__name__ + ' ' + str(error)[:300]
+    if '429' in hint or 'RESOURCE_EXHAUSTED' in hint.upper():
+        return f'{label}: лимит запросов или квота API (429). Подождите и попробуйте продолжить.'
+    if '401' in hint or 'UNAUTHENTICATED' in hint.upper():
+        return f'{label}: ошибка авторизации API (401). Проверьте локальный ключ.'
+    if '403' in hint or 'PERMISSION_DENIED' in hint.upper():
+        return f'{label}: доступ к модели отклонён (403). Проверьте разрешения и тариф API.'
+    if '404' in hint or 'NOT_FOUND' in hint.upper():
+        return f'{label}: выбранная модель не найдена в API (404).'
+    if '503' in hint or 'UNAVAILABLE' in hint.upper():
+        return f'{label}: API временно недоступен (503). Попробуйте продолжить позже.'
+    if isinstance(error, TimeoutError) or 'Timeout' in type(error).__name__:
+        return f'{label}: превышено время ожидания ответа.'
+    if agent == 'gemini' and isinstance(error, RuntimeError) and str(error).startswith('Gemini API не вернул текстовый ответ'):
+        return f'{label}: модель вернула пустой ответ.'
+    return f'{label}: не удалось получить ответ. Подробности в журнале сервера.'
+
 
 
 def build_prompt(stage: int, agent: str, question: str, messages: list[dict], prior: str,
@@ -121,15 +165,18 @@ class Engine:
                     body = await self.providers.answer(agent, stage, prompt, cfg)
                     self.store.put_message(tid, stage, agent, body)
                 results = await asyncio.gather(*(invoke(agent) for agent in pending), return_exceptions=True)
-                errors = [r for r in results if isinstance(r, BaseException)]
+                errors = [(agent, result) for agent, result in zip(pending, results)
+                          if isinstance(result, BaseException)]
                 if errors:
-                    if any(isinstance(r, asyncio.CancelledError) for r in errors):
+                    if any(isinstance(error, asyncio.CancelledError) for _, error in errors):
                         raise asyncio.CancelledError()
-                    self.store.status(tid, 'error', stage)
-                    # Exception details are not exposed to UI; errors remain in server log.
+                    description = ' | '.join(public_error(agent, error)
+                                             for agent, error in errors)
+                    self.store.status(tid, 'error', stage, error_detail=description)
                     import logging
-                    for error in errors:
-                        logging.error('AI Council: turn %s stage %s: %r', tid, stage, error)
+                    for agent, error in errors:
+                        logging.error('AI Council: turn %s stage %s agent %s: %r',
+                                      tid, stage, agent, error)
                     return
             if t['mode'] == 'joint' and not self.store.get_turn(tid)['protocol']:
                 self.store.status(tid, 'summarizing', 3)
@@ -141,7 +188,10 @@ class Engine:
         except asyncio.CancelledError:
             self.store.status(tid, 'stopped')
             raise
-        except Exception:
+        except Exception as exc:
             import logging
             logging.exception('AI Council turn %s', tid)
-            self.store.status(tid, 'error')
+            if t['mode'] == 'joint' and self.store.get_turn(tid)['status'] == 'summarizing':
+                self.store.status(tid, 'error', error_detail=public_error(self.primary_agent, exc))
+            else:
+                self.store.status(tid, 'error', error_detail='Ошибка выполнения обсуждения. Подробности в журнале сервера.')

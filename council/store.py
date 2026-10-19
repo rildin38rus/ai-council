@@ -25,7 +25,7 @@ class Store:
                     id TEXT PRIMARY KEY, room_id TEXT NOT NULL, question TEXT NOT NULL,
                     mode TEXT NOT NULL, settings TEXT NOT NULL, status TEXT NOT NULL,
                     stage INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-                    free_replies INTEGER NOT NULL DEFAULT 6, protocol TEXT,
+                    free_replies INTEGER NOT NULL DEFAULT 6, protocol TEXT, error_detail TEXT,
                     FOREIGN KEY(room_id) REFERENCES rooms(id)
                 );
                 CREATE TABLE IF NOT EXISTS messages (
@@ -42,6 +42,8 @@ class Store:
                 con.execute('ALTER TABLE turns ADD COLUMN free_replies INTEGER NOT NULL DEFAULT 6')
             if 'protocol' not in columns:
                 con.execute('ALTER TABLE turns ADD COLUMN protocol TEXT')
+            if 'error_detail' not in columns:
+                con.execute('ALTER TABLE turns ADD COLUMN error_detail TEXT')
             # Never reissue possibly billable requests automatically after a restart.
             con.execute("UPDATE turns SET status='interrupted' WHERE status IN ('running','summarizing')")
 
@@ -112,11 +114,15 @@ class Store:
     def set_protocol(self, tid, body):
         self.execute('UPDATE turns SET protocol=? WHERE id=?', (body, tid))
 
-    def status(self, tid, state, stage=None):
+    def status(self, tid, state, stage=None, error_detail=None):
+        # Display only sanitized provider diagnostics (never raw API errors or keys).
+        detail = error_detail if state == 'error' else None
         if stage is None:
-            self.execute('UPDATE turns SET status=? WHERE id=?', (state, tid))
+            self.execute('UPDATE turns SET status=?,error_detail=? WHERE id=?',
+                         (state, detail, tid))
         else:
-            self.execute('UPDATE turns SET status=?,stage=? WHERE id=?', (state, stage, tid))
+            self.execute('UPDATE turns SET status=?,stage=?,error_detail=? WHERE id=?',
+                         (state, stage, detail, tid))
 
     def context(self, rid, exclude_turn, limit=4):
         turns = self.fetch('''SELECT id, question, mode FROM turns
