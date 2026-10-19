@@ -14,6 +14,12 @@ def public_error(agent: str, error: BaseException) -> str:
         # Whitelist user-facing diagnostics; even future exception messages
         # should not be able to reveal local file paths or secret values.
         message = str(error)
+        if 'Контекст запроса' in message:
+            return 'Ollama: окно контекста переполнено (HTTP 400). Сократите историю обсуждения.'
+        if 'параметр think' in message:
+            return 'Ollama: несовместимый параметр think (HTTP 400). Проверьте версию Ollama.'
+        if 'HTTP 400' in message:
+            return 'Ollama: запрос отклонён (HTTP 400). Подробности в журнале сервера.'
         if 'лимита генерации' in message:
             return 'Ollama: превышен лимит длины ответа. Попробуйте сократить вопрос.'
         if 'черновик' in message:
@@ -82,7 +88,7 @@ def build_prompt(stage: int, agent: str, question: str, messages: list[dict], pr
                 'Можешь изменить свою позицию. Не стремись к согласию любой ценой.')
     comments = {m['agent']: m['body'] for m in messages if m['stage'] == 2}
     return (prefix + '\n<peer_messages stage="1">\nПервичные ответы (цитаты):\n' +
-            '\n'.join(f'{a}: {initial[a]}' for a in agents) +
+            '\n'.join(f'{a}: {excerpt(initial[a], 2600)}' for a in agents) +
             '\n</peer_messages>\n\n<peer_messages stage="2">\nКомментарии второго этапа (цитаты):\n' +
             '\n'.join(f'{a}: {excerpt(comments[a], 2600)}' for a in agents) +
             f'\n</peer_messages>\n\nТы — {agent}. Дай заключительную позицию: что принял(а), что оспариваешь, '
@@ -110,7 +116,7 @@ def protocol_prompt(question: str, messages: list[dict]) -> str:
     """An editor's synthesis, not a fictitious consensus or fourth debate round."""
     history = '\n\n'.join(f"Этап {m['stage']}, {m['agent']}:\n{excerpt(m['body'], 1900)}" for m in messages)
     return (f'Ты нейтральный редактор итогового протокола AI Council.\n'
-            f'Вопрос пользователя: {question}\n\nПолная дискуссия:\n{history}\n\n'
+            f'Вопрос пользователя: {question}\n\nВыдержки из дискуссии (полный текст сохранён в базе):\n{history}\n\n'
             'Составь КРАТКИЙ протокол с заголовками: Итог, Совпадения, Разногласия, '
             'Непроверенные утверждения, Практические шаги. '
             'Не выдумывай консенсус, проверку внешних источников или новые факты. '
