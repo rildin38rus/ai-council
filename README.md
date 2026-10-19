@@ -6,7 +6,7 @@
 
 При отсутствии оплаченного OpenAI API можно использовать локальную модель **Ollama** как первого агента, а **Gemini API** — как второго. Локальный агент **не является ChatGPT** и явно подписан `local` в базе/интерфейсе.
 
-**Windows:** установите [Ollama](https://ollama.com/download/windows), выполните `ollama pull qwen3:4b`, затем в локальном `.env` выставьте `COUNCIL_DEMO=0`, `COUNCIL_PRIMARY_PROVIDER=ollama`, `GEMINI_API_KEY=...`. Запустите `start_windows.bat`. OpenAI-ключ не нужен. Полное руководство: [docs/OLLAMA_LOCAL.md](docs/OLLAMA_LOCAL.md).
+**Windows:** установите [Ollama](https://ollama.com/download/windows), выполните `ollama pull qwen3:4b-instruct`, затем в локальном `.env` выставьте `COUNCIL_DEMO=0`, `COUNCIL_PRIMARY_PROVIDER=ollama`, `GEMINI_API_KEY=...`. Запустите `start_windows.bat`. OpenAI-ключ не нужен. Полное руководство: [docs/OLLAMA_LOCAL.md](docs/OLLAMA_LOCAL.md).
 
 **Ограничение:** пользователь должен самостоятельно установить Ollama и загрузить модель. Автотесты не проверяют реальную доступность Ollama на пользовательском ПК и фактическую квоту Gemini API.
 
