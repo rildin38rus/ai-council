@@ -101,7 +101,7 @@ class Store:
     def messages(self, tid):
         return self.fetch('''SELECT stage,agent,body,created_at FROM messages
                              WHERE turn_id=? ORDER BY stage,
-                             CASE agent WHEN 'openai' THEN 1 WHEN 'gemini' THEN 2 ELSE 3 END,
+                             CASE agent WHEN 'local' THEN 0 WHEN 'openai' THEN 1 WHEN 'gemini' THEN 2 ELSE 3 END,
                              created_at''', (tid,))
 
     def put_message(self, tid, stage, agent, body):
