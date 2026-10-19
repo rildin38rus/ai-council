@@ -31,7 +31,7 @@ class StartTurn(BaseModel):
     mode: str = 'joint'
     free_replies: int = Field(default=6, ge=2, le=8)
     openai: AgentSettings = AgentSettings(model='gpt-6.1-sol')
-    gemini: AgentSettings = AgentSettings(model='gemini-3.1-pro-preview')
+    gemini: AgentSettings = AgentSettings(model='gemini-3.5-flash-lite')
 
 
 @app.get('/')
@@ -77,7 +77,7 @@ async def new_turn(rid: str, data: StartTurn):
         allowed = ('default','low','medium','high','xhigh','max') if agent == 'openai' else ('default','minimal','low','medium','high')
         if s.effort not in allowed:
             raise HTTPException(422, f'Недопустимая глубина {agent}')
-        if agent == 'gemini' and s.effort == 'minimal' and ('flash' not in s.model.lower() or 'flash-lite' in s.model.lower()):
+        if agent == 'gemini' and s.effort == 'minimal' and 'flash' not in s.model.lower():
             raise HTTPException(422, 'Минимальная глубина не поддерживается выбранной моделью Gemini. Используйте low/medium/high или Авто')
         if agent == 'openai' and s.mode not in ('standard', 'pro'):
             raise HTTPException(422, 'Недопустимый режим OpenAI')
