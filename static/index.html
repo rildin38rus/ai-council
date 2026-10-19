@@ -68,7 +68,7 @@ async function init(){try{
 let config=await api('/api/config');primaryAgent=config.primary_agent||'openai';
 if(primaryAgent==='local'){
   $('primaryTitle').textContent='01 · Локальная модель (Ollama)';
-  $('omodel').value='qwen3:4b';
+  $('omodel').value='qwen3:4b-instruct';
   $('oeffort').value='default';$('oeffort').disabled=true;
   $('omode').value='standard';$('omode').disabled=true;
   $('soloPrimary').value='solo_local';$('soloPrimary').textContent='Только локальная модель';
