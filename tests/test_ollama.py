@@ -1,14 +1,17 @@
 """Offline regression tests for Ollama + Gemini council. No real API calls."""
 import asyncio
+import io
+import json
+import urllib.error
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from council.engine import Engine
+from council.engine import Engine, build_prompt, protocol_prompt, public_error
 from council.store import Store
-from council.ollama_provider import _generate, installed_models, OllamaError
+from council.ollama_provider import _generate, _request, installed_models, OllamaError
 from council.providers import ProviderRouter
 from council.model_catalog import list_ollama_models
 
@@ -119,6 +122,44 @@ class OllamaUnitTests(unittest.IsolatedAsyncioTestCase):
             'done_reason': 'stop'}):
             answer = _generate('qwen3:4b-instruct', 'Q', 'System')
         self.assertIn('Три пункта:', answer)
+
+    async def test_http_400_context_error_classified_without_leaking_server_body(self):
+        body = json.dumps({'error': {'type': 'exceed_context_size_error',
+                                     'message': 'request tokens exceed context size 4096; secret=HIDDEN'}}).encode()
+        error = urllib.error.HTTPError('http://127.0.0.1:11434/api/chat',
+                                       400, 'Bad request', {}, io.BytesIO(body))
+        with patch('council.ollama_provider.urllib.request.urlopen',
+                   side_effect=error):
+            with self.assertRaisesRegex(OllamaError, 'Контекст запроса') as captured:
+                _request('POST', '/api/chat', {'model': 'qwen3:4b-instruct'})
+        self.assertNotIn('HIDDEN', str(captured.exception))
+        self.assertIn('контекста', public_error('local', captured.exception))
+
+    async def test_large_stage3_prompt_is_explicitly_compacted(self):
+        agents=('local', 'gemini')
+        messages = [
+            {'agent': agent, 'stage': stage,
+             'body': f'HEAD-{stage}-{agent} ' + 'развёрнутый довод. ' * 950 +
+                     f' TAIL-{stage}-{agent}'}
+            for stage in (1, 2) for agent in agents
+        ]
+        prompt = build_prompt(3, 'local', 'Спроектировать общую память',
+                              messages, 'ПРЕДЫСТОРИЯ' * 2400, agents)
+        self.assertLess(len(prompt), 17000)
+        self.assertIn('пропущено', prompt)
+        self.assertIn('HEAD-1-local', prompt)
+        self.assertIn('TAIL-2-gemini', prompt)
+        self.assertIn('Взаимная критика', build_prompt(2, 'local', 'X', messages[:2], '', agents))
+        protocol = protocol_prompt('Q', messages + [
+            {'agent': agent, 'stage': 3, 'body': 'Conclusion ' * 1400} for agent in agents])
+        self.assertIn('Выдержки из дискуссии', protocol)
+        self.assertLess(len(protocol), 15000)
+
+    async def test_local_ollama_context_option_requested(self):
+        with patch('council.ollama_provider._request', return_value={
+            'message': {'content': 'Готовый ответ'}, 'done_reason': 'stop'}) as sender:
+            _generate('qwen3:4b-instruct', 'Q', 'S')
+        self.assertEqual(sender.call_args.args[2]['options']['num_ctx'], 16384)
 
     async def test_installed_model_catalog(self):
         with patch('council.ollama_provider._request', return_value={
