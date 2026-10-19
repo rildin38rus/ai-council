@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from council.engine import Engine, build_prompt, protocol_prompt, public_error
 from council.store import Store
-from council.ollama_provider import _generate, _request, installed_models, OllamaError
+from council.ollama_provider import _generate, _request, installed_models, OllamaError, _clean_text
 from council.providers import ProviderRouter
 from council.model_catalog import list_ollama_models
 
@@ -92,9 +92,75 @@ class OllamaUnitTests(unittest.IsolatedAsyncioTestCase):
         payload = sender.call_args.args[2]
         self.assertEqual(payload['model'], 'qwen3:4b-instruct')
         self.assertFalse(payload['stream'])
-        self.assertFalse(payload['think'])
+        self.assertNotIn('think', payload)  # Non-thinking Instruct needs no think flag.
         self.assertEqual(payload['messages'][0]['role'], 'system')
         self.assertNotIn('OPENAI_API_KEY', str(payload))
+
+    async def test_non_instruct_keeps_think_false(self):
+        with patch('council.ollama_provider._request', return_value={
+            'message': {'content': 'Готово'}}) as request:
+            _generate('llama3.2:3b', 'Question', 'System')
+        payload = request.call_args.args[2]
+        self.assertIs(payload['think'], False)
+
+    async def test_explicit_unsupported_think_retries_exactly_once(self):
+        calls = []
+        def request(*args, **kwargs):
+            calls.append(dict(args[2]))
+            if len(calls) == 1:
+                raise OllamaError('Ollama отклонила параметр think (HTTP 400).',
+                                  reason='unsupported_think')
+            return {'message': {'content': 'Ответ'}, 'done_reason': 'stop'}
+        with patch('council.ollama_provider._request', side_effect=request):
+            answer = _generate('llama3.2:3b', 'Q', 'System', stage=3)
+        self.assertEqual(answer, 'Ответ')
+        self.assertEqual(len(calls), 2)
+        self.assertIn('think', calls[0])
+        self.assertNotIn('think', calls[1])
+        self.assertEqual(calls[0]['options'], calls[1]['options'])
+
+    async def test_other_bad_request_never_auto_retries(self):
+        with patch('council.ollama_provider._request',
+                   side_effect=OllamaError('Контекст запроса превышает окно Ollama (HTTP 400).',
+                                           reason='context_overflow')) as request:
+            with self.assertRaisesRegex(OllamaError, 'Контекст'):
+                _generate('llama3.2:3b', 'Q', 'System')
+        request.assert_called_once()
+
+    async def test_instruct_bad_request_does_not_retry(self):
+        with patch('council.ollama_provider._request',
+                   side_effect=OllamaError('Ollama отклонила параметр think (HTTP 400).',
+                                           reason='unsupported_think')) as request:
+            with self.assertRaises(OllamaError):
+                _generate('qwen3:4b-instruct', 'Q', 'System')
+        request.assert_called_once()
+
+    async def test_clean_malformed_unicode_and_null_characters(self):
+        self.assertEqual(_clean_text('аб\\x00в\\ud800'), 'абв?')
+        with patch('council.ollama_provider._request', return_value={
+            'message': {'content': 'ok'}}) as request:
+            _generate('qwen3:4b-instruct', 'Текст\\x00\\ud800', 'C')
+        user_text = request.call_args.args[2]['messages'][1]['content']
+        self.assertNotIn('\\x00', user_text)
+        self.assertNotIn('\\ud800', user_text)
+        self.assertIn('?', user_text)
+
+    async def test_http_400_logging_is_structural_and_credential_safe(self):
+        body = json.dumps({'error': 'model does not support thinking; user: SECRET_TOKEN'}).encode()
+        error = urllib.error.HTTPError('http://127.0.0.1:11434/api/chat',
+                                       400, 'Bad Request', {}, io.BytesIO(body))
+        with patch('council.ollama_provider.urllib.request.urlopen', side_effect=error):
+            with self.assertLogs(level='WARNING') as records:
+                with self.assertRaises(OllamaError) as captured:
+                    _request('POST', '/api/chat', {
+                        'messages': [{'role':'user','content':'PRIVATE_PROMPT_CONTENT'}],
+                        'think': False, 'options': {'num_ctx': 16384, 'num_predict': 1536}}, stage=3)
+        self.assertEqual(captured.exception.reason, 'unsupported_think')
+        report = ' '.join(records.output)
+        self.assertIn('stage=3', report)
+        self.assertIn('class=unsupported_think', report)
+        self.assertNotIn('SECRET_TOKEN', report)
+        self.assertNotIn('PRIVATE_PROMPT_CONTENT', report)
 
     async def test_thinking_only_alias_refused_before_api_request(self):
         with patch('council.ollama_provider._request') as request:
