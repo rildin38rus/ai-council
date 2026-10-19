@@ -44,6 +44,6 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          GEMINI_REVIEW_MODEL: ${{ vars.GEMINI_REVIEW_MODEL || 'gemini-2.5-flash' }}
-          GEMINI_REVIEW_THINKING_BUDGET: ${{ vars.GEMINI_REVIEW_THINKING_BUDGET || '1024' }}
+          GEMINI_REVIEW_MODEL: ${{ vars.GEMINI_REVIEW_MODEL || 'gemini-3.5-flash-lite' }}
+          GEMINI_REVIEW_THINKING_LEVEL: ${{ vars.GEMINI_REVIEW_THINKING_LEVEL || 'medium' }}
         run: python scripts/gemini_pr_review.py
