@@ -102,6 +102,13 @@ class OllamaUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m['id'] for m in models], ['deepseek-r1:7b', 'qwen3:4b'])
         self.assertIn('Локальная', models[0]['note'])
 
+    async def test_ui_local_responses_use_left_panel_and_have_copy_button(self):
+        html = (Path(__file__).resolve().parents[1] / 'static' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn("let feed=$(agent==='gemini'?'gFeed':'oFeed');", html)
+        self.assertNotIn("let feed=$(agent==='openai'?'oFeed':'gFeed');", html)
+        self.assertIn("navigator.clipboard.writeText(m.body)", html)
+        self.assertIn("Скопировать ответ", html)
+
     async def test_missing_ollama_is_reported(self):
         with patch('council.model_catalog.installed_models', side_effect=OllamaError('Ollama offline')):
             result = await list_ollama_models()
