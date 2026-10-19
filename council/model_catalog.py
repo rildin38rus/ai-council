@@ -14,6 +14,52 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Curated provider documentation: model presence in list API does not prove billing access.
+KNOWN_GEMINI_MODELS: dict[str, dict] = {
+    "gemini-3.5-flash-lite": {
+        "role": "Рутина, классификация, OCR/извлечение, быстрые ответы, субагенты",
+        "tier": "fast", "free_tier": True,
+        "recommended_thinking": "minimal",
+        "thinking_levels": ["minimal", "low", "medium", "high"],
+        "usd_per_m_input": 0.30, "usd_per_m_output": 2.50,
+        "doc": "https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite",
+    },
+    "gemini-3.8-flash": {
+        "role": "Основная работа: код, анализ документов, агенты, рецензирование",
+        "tier": "balanced", "free_tier": True,
+        "recommended_thinking": "medium",
+        "thinking_levels": ["low", "medium", "high"],
+        "usd_per_m_input": 0.75, "usd_per_m_output": 3.75,
+        "doc": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+    },
+    "gemini-3.1-pro-preview": {
+        "role": "Глубокий анализ и мультимодальные сложные задачи; preview",
+        "tier": "advanced", "free_tier": False,
+        "recommended_thinking": "high",
+        "thinking_levels": ["low", "medium", "high"],
+        "usd_per_m_input": 2.00, "usd_per_m_output": 12.00,
+        "doc": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview",
+    },
+    "gemini-4-argon": {
+        "role": "Эскалация: сложная архитектура, математика, наука, долгие агенты",
+        "tier": "frontier", "free_tier": False,
+        "recommended_thinking": "medium",
+        "thinking_levels": ["low", "medium", "high"],
+        "usd_per_m_input": 2.00, "usd_per_m_output": 10.00,
+        "doc": "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+    },
+}
+
+
+def describe_gemini_model(model_id: str) -> dict:
+    """Indicative STANDARD paid-tier prices, USD/1M tokens, as of Oct 19, 2026.
+
+    Argon price increases Dec 1, 2026; 3.8 Flash price increases Jan 1, 2027.
+    Pro price doubles for prompts >200k. These fields are advisory only.
+    """
+    return dict(KNOWN_GEMINI_MODELS.get(model_id, {}))
+
+
 CACHE_SECONDS = 300
 MAX_PAGES = 20
 _cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
@@ -97,6 +143,7 @@ def _gemini_models(key: str) -> list[dict]:
                 "input_limit": item.get("inputTokenLimit"),
                 "output_limit": item.get("outputTokenLimit"),
                 "note": "API подтвердил поддержку generateContent; тарификация и доступ зависят от проекта",
+                "recommendation": describe_gemini_model(mid),
             }
         page_token = data.get("nextPageToken")
         if not page_token:
