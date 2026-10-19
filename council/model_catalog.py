@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from .ollama_provider import installed_models, OllamaError
 
 # Curated provider documentation: model presence in list API does not prove billing access.
 KNOWN_GEMINI_MODELS: dict[str, dict] = {
@@ -181,10 +182,24 @@ async def list_provider_models(agent: str, refresh: bool = False) -> dict:
             "message": "Модели получены через API; доступ к конкретной операции не гарантирован"}
 
 
-async def model_catalog(refresh: bool = False) -> dict:
+async def list_ollama_models() -> dict:
+    try:
+        models = await asyncio.to_thread(installed_models)
+    except OllamaError as exc:
+        return {"status": "offline", "models": [], "count": 0,
+                "message": str(exc)}
+    return {"status": "live", "models": models, "count": len(models),
+            "message": "Установленные локальные модели Ollama (без API-ключа)"}
+
+
+async def model_catalog(refresh: bool = False, primary_provider: str = 'openai') -> dict:
     openai, gemini = await asyncio.gather(
         list_provider_models("openai", refresh),
         list_provider_models("gemini", refresh))
-    return {"openai": openai, "gemini": gemini, "refresh": refresh,
+    ollama = await list_ollama_models() if primary_provider == 'ollama' else {
+        "status": "disabled", "models": [], "count": 0,
+        "message": "Локальный провайдер выключен"}
+    return {"openai": openai, "gemini": gemini, "ollama": ollama,
+            "refresh": refresh,
             "gemini_guide": KNOWN_GEMINI_MODELS,
             "guide_as_of": "2026-10-19"}
