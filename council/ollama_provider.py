@@ -24,6 +24,32 @@ def _request(method: str, endpoint: str, payload: dict | None = None, timeout: i
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise OllamaError("Ollama не нашла модель. Загрузите её через: ollama pull <имя-модели>") from None
+        if exc.code == 400:
+            # Read for classification only: the body could contain private prompt
+            # fragments. Never expose or log the raw HTTP response body.
+            try:
+                detail = json.loads(exc.read(4096).decode("utf-8", errors="replace"))
+                message = detail.get("error", "") if isinstance(detail, dict) else ""
+                if isinstance(message, dict):
+                    message = str(message.get("type", "")) + " " + str(message.get("message", ""))
+                detail_text = str(message).lower()
+            except (ValueError, OSError):
+                detail_text = ""
+            if ("context" in detail_text or "контекст" in detail_text or
+                    "too many tokens" in detail_text):
+                raise OllamaError(
+                    "Контекст запроса превышает окно Ollama (HTTP 400). "
+                    "Попробуйте сократить историю или увеличить num_ctx."
+                ) from None
+            if "think" in detail_text and ("support" in detail_text or "invalid" in detail_text):
+                raise OllamaError(
+                    "Ollama отклонила параметр think (HTTP 400). "
+                    "Проверьте совместимость версии и модели."
+                ) from None
+            raise OllamaError(
+                "Ollama отклонила запрос HTTP 400. "
+                "Причина может быть в параметрах, шаблоне модели или контексте."
+            ) from None
         raise OllamaError(f"Ollama вернула HTTP {exc.code}") from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise OllamaError("Ollama недоступна на 127.0.0.1:11434. Установите и запустите Ollama.") from None
@@ -71,7 +97,7 @@ def _generate(model: str, prompt: str, system: str) -> str:
                      {"role": "user", "content": prompt}],
         "stream": False,
         "think": False,
-        "options": {"num_predict": 1536},
+        "options": {"num_predict": 1536, "num_ctx": 16384},
     }
     result = _request("POST", "/api/chat", payload, timeout=900)
     message = result.get("message")
